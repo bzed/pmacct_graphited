@@ -1,0 +1,7 @@
+PyYAML>=3.11
+argh>=0.26.1
+argparse>=1.2.1
+graphitesend>=0.3.4
+pathtools>=0.1.2
+watchdog>=0.8.2
+wsgiref>=0.1.2
