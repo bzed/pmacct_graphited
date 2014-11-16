@@ -3,5 +3,7 @@ argh>=0.26.1
 argparse>=1.2.1
 graphitesend>=0.3.4
 pathtools>=0.1.2
+python-application>=1.4.1
+setproctitle>=1.1.8
 watchdog>=0.8.2
 wsgiref>=0.1.2

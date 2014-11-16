@@ -1,0 +1,93 @@
+#!/usr/bin/python
+# -*- coding: utf-8 -*-
+
+"""
+Copyright (C) 2014 Bernd Zeimetz <bernd@bzed.de>
+Copyright (C) 2014 conova communications GmbH
+
+Licensed under the Apache License, Version 2.0 (the "License");
+you may not use this file except in compliance with the License.
+You may obtain a copy of the License at
+
+   http://www.apache.org/licenses/LICENSE-2.0
+
+Unless required by applicable law or agreed to in writing, software
+distributed under the License is distributed on an "AS IS" BASIS,
+WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+See the License for the specific language governing permissions and
+limitations under the License.
+"""
+
+from setproctitle import setproctitle
+from application import log
+from application.process import process, ProcessError
+
+from watchdog.observers import Observer
+from setproctitle import setproctitle
+
+import time
+import os
+import re
+import sys
+import signal
+
+class PmacctGraphiteD(object):
+
+
+    def __init__(self):
+        self.stop = False
+
+
+    def run(self):
+        while not self.stop:
+            time.sleep(1)
+
+    def stop(self):
+        self.stop = True
+
+if __name__ == "__main__":
+
+    from optparse import OptionParser
+    from os.path import basename
+
+    name = os.path.basename(sys.argv[0])
+
+    epilog = '%s - delivering your pmacct statistics to graphite since 2014' %(name,)
+
+    parser = OptionParser(epilog=epilog)
+    parser.add_option('-N', '--nodaemon',
+                        action='store_true',
+                        default=False,
+                        dest='nodaemon',
+                        help='do not run as daemon and log to stdout/stderr')
+    parser.add_option('-d', '--debug',
+                        action='store_true',
+                        default=False,
+                        dest='debug',
+                        help='enable debugging')
+    (options, args) = parser.parse_args()
+
+    setproctitle('%s Core' )
+
+    if options.debug:
+        DEBUG=True
+
+    log.msg("Starting %s." % name)
+    if not options.nodaemon:
+        pidfile = process.runtime_file('%s.pid' % name)
+        try:
+            process.daemonize(pidfile)
+        except ProcessError, e:
+            log.fatal(str(e))
+            sys.exit(1)
+        else:
+            log.start_syslog(name)
+    log.msg("%s started" % name)
+
+    pgd = PmacctGraphiteD()
+
+    try:
+        pgd.run()
+    except KeyboardInterrupt, SystemExit:
+        pgd.stop()
+
