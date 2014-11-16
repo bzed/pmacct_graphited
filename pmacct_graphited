@@ -34,7 +34,7 @@ import signal
 class PmacctGraphiteD(object):
 
 
-    def __init__(self):
+    def __init__(self, local_as, default_as, graphite_prefix, pmacct_aggregations):
         self.stop = False
 
 
@@ -46,7 +46,7 @@ class PmacctGraphiteD(object):
         self.stop = True
 
 if __name__ == "__main__":
-
+    from argparse import ArgumentParser
     from optparse import OptionParser
     from os.path import basename
 
@@ -54,18 +54,42 @@ if __name__ == "__main__":
 
     epilog = '%s - delivering your pmacct statistics to graphite since 2014' %(name,)
 
-    parser = OptionParser(epilog=epilog)
-    parser.add_option('-N', '--nodaemon',
+    parser = ArgumentParser(epilog=epilog)
+    parser.add_argument('-N', '--nodaemon',
                         action='store_true',
-                        default=False,
                         dest='nodaemon',
-                        help='do not run as daemon and log to stdout/stderr')
-    parser.add_option('-d', '--debug',
-                        action='store_true',
                         default=False,
+                        help='do not run as daemon and log to stdout/stderr')
+    parser.add_argument('-d', '--debug',
+                        action='store_true',
                         dest='debug',
+                        default=False,
                         help='enable debugging')
-    (options, args) = parser.parse_args()
+    parser.add_argument('-l', '--local-as',
+                        action='append',
+                        dest='local_as',
+                        help='mark given AS number as local; can be specified as often as necessary',
+                        type=int,
+                        required=True)
+    parser.add_argument('-a', '--default-as',
+                        action='store',
+                        dest='default_as',
+                        help='default AS number, AS "0" will be replaced by this number in graphite',
+                        default=None,
+                        type=int)
+    parser.add_argument('-g', '--graphite-prefix',
+                        action='store',
+                        dest='graphite_prefix',
+                        help='prefix for generated graphite metric names',
+                        default='network.pmacct',
+                        type=str)
+    parser.add_argument('-p', '--pmacct-aggregations',
+                        action='append',
+                        dest='pmacct_aggregations',
+                        help='''list of pmacct aggregations we want to track; Format: NAME:spool_directory''',
+                        required=True,
+                        type=str)
+    options = parser.parse_args()
 
     setproctitle('%s Core' )
 
@@ -84,7 +108,10 @@ if __name__ == "__main__":
             log.start_syslog(name)
     log.msg("%s started" % name)
 
-    pgd = PmacctGraphiteD()
+    pgd = PmacctGraphiteD(options.local_as,
+                          options.default_as,
+                          options.graphite_prefix,
+                          options.pmacct_aggregations)
 
     try:
         pgd.run()
