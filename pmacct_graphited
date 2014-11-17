@@ -102,10 +102,10 @@ if __name__ == "__main__":
                         type=str)
     parser.add_argument('-p', '--pmacct-aggregations',
                         action='append',
-                        dest='pmacct_aggregations',
+                        dest='pmacct_aggregations_args',
                         help='''pmacct aggregation name and directory we want to track;
                         Format: graphite_name:type:spool_directory;
-                        Valid types: peer|as;
+                        Valid types: peer,as;
                         can be specified as often as necessary''',
                         required=True,
                         type=str)
@@ -128,10 +128,34 @@ if __name__ == "__main__":
             log.start_syslog(name)
     log.msg("%s started" % name)
 
+
+    # parse pmacct_aggregations into a dict
+    pmacct_aggregations = {}
+    for pmacct_aggregation in options.pmacct_aggregations_args:
+        try:
+            graphite_name, agg_type, spool_dirctory = pmacct_aggregation.split(':')
+            if not graphite_name:
+                raise Exception('graphite_name must not be empty!')
+            graphite_name = graphite_name.strip('.')
+            if not agg_type in ['as', 'peer']:
+                raise Exception('unknown aggregation type "%s", please specify as or peer!' %(agg_type, ))
+            if not os.path.isdir(spool_dirctory):
+                raise Exception('directory "%s" does not exist' %(spool_dirctory))
+            if pmacct_aggregations.has_key(graphite_name):
+                raise Exception('please specify "%s" as aggregation name once only' %(graphite_name,))
+
+        except Exception, e:
+            log.fatal("Failed to parse option '-p %s': '%s'" %(pmacct_aggregation, str(e)))
+            sys.exit(2)
+        else:
+            pmacct_aggregations['graphite_name'] = {}
+            pmacct_aggregations['graphite_name']['type'] = agg_type
+            pmacct_aggregations['graphite_name']['spool_dirctory'] = spool_dirctory
+
     pgd = PmacctGraphiteD(options.local_as,
                           options.default_as,
-                          options.graphite_prefix,
-                          options.pmacct_aggregations)
+                          options.graphite_prefix.strip('.'),
+                          pmacct_aggregations)
 
     try:
         pgd.run()
