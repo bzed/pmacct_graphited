@@ -1,3 +1,5 @@
+**NOT FINISHED YET - WORK IN PROGRESS**
+
 pmacct_graphited
 ================
 
