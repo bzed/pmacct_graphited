@@ -32,24 +32,74 @@ import re
 import sys
 import signal
 
+import graphitesend
 
 class PmacctDirectoryHandler(RegexMatchingEventHandler):
 
-    def __init__(self):
+    def __init__(self,
+            graphite_prefix,
+            name,
+            renormalization_factor=1,
+            graphite_server='localhost',
+            graphite_port=2003,
+            debug=False):
+        self.renormalization_factor = renormalization_factor
+        self.graphite_server = graphite_server
+        self.graphite_port = graphite_port
+        self.graphitesender = None
+        self.debug = debug
         RegexMatchingEventHandler.__init__( self,
                                             regexes=[r'^pmacct_[0-9]+\.json$'],
                                             ignore_directories=True,
                                             case_sensitive=True
                                             )
 
+    def _graphite_connect(self):
+        self.graphitesender = graphitesend.init(
+                prefix=graphite_prefix,
+                system_name=name,
+                graphite_server=self.graphite_server,
+                graphite_port=self.graphite_port,
+                debug=self.debug
+        )
 
+
+    def _renormalize(self, flow_bytes, flow_packets, renormalization_factor=self.renormalization_factor):
+        if renormalization_factor==1:
+            return (flow_bytes, flow_packets)
+# usrf from pmacct:
+#bpratio = queue[x]->bytes_counter/queue[x]->packet_counter;
+#queue[x]->bytes_counter = queue[x]->bytes_counter*r;
+#queue[x]->packet_counter = queue[x]->bytes_counter/bpratio; /* hmmm */
+        bpratio = float(flow_bytes) / float(flow_packets)
+        flow_bytes = flow_bytes * renormalization_factor
+        flow_packets = flow_bytes / bpratio
+        return (flow_bytes, flow_packets)
+
+
+    def normalize_and_send_metric(self, metric, flow_bytes, flow_packets, interval_seconds, timestamp=time.time()):
+        # renormalize to fix sampling
+        flow_bytes, flow_packets = self._renormalize(flow_bytes, flow_packets)
+        # re-use renormalize function to calculate byte/packets per second
+        flow_bytes, flow_packets = self._renormalize(flow_bytes, flow_packets, (1/float(interval_seconds)))
+
+        g.send('%s.bytes', flow_bytes, timestamp)
+
+
+
+#    def __init__(self, local_as, default_as, graphite_prefix, name, directory):
 
 class PmacctGraphiteD(object):
 
 
-    def __init__(self, local_as, default_as, graphite_prefix, pmacct_aggregations):
+    def __init__(self, local_as, default_as, graphite_prefix, pmacct_aggregations, renormalization_factor):
         self.stop_now = False
         self.observer = Observer()
+        self.local_as = local_as
+        self.default_as = default_as
+        self.graphite_prefix = graphite_prefix
+        self.pmacct_aggregations = pmacct_aggregations
+        self.renormalization_factor = renormalization_factor
 
 
     def run(self):
@@ -64,7 +114,6 @@ class PmacctGraphiteD(object):
 
 if __name__ == "__main__":
     from argparse import ArgumentParser
-    from optparse import OptionParser
     from os.path import basename
 
     name = os.path.basename(sys.argv[0])
@@ -109,6 +158,13 @@ if __name__ == "__main__":
                         can be specified as often as necessary''',
                         required=True,
                         type=str)
+    parser.add_argument('-r', '--renormalization-factor',
+                        action='store',
+                        dest='renormalization_factor',
+                        help='Applies the renormalization factor to counters,
+                                suitable for use in conjunction with uniform sampling methods.',
+                        default=1,
+                        type=int)
     options = parser.parse_args()
 
     setproctitle('%s' %(name,) )
@@ -148,14 +204,15 @@ if __name__ == "__main__":
             log.fatal("Failed to parse option '-p %s': '%s'" %(pmacct_aggregation, str(e)))
             sys.exit(2)
         else:
-            pmacct_aggregations['graphite_name'] = {}
-            pmacct_aggregations['graphite_name']['type'] = agg_type
-            pmacct_aggregations['graphite_name']['spool_dirctory'] = spool_dirctory
+            pmacct_aggregations[graphite_name] = {}
+            pmacct_aggregations[graphite_name]['type'] = agg_type
+            pmacct_aggregations[graphite_name]['spool_dirctory'] = spool_dirctory
 
     pgd = PmacctGraphiteD(options.local_as,
                           options.default_as,
                           options.graphite_prefix.strip('.'),
-                          pmacct_aggregations)
+                          pmacct_aggregations,
+                          options.renormalization_factor)
 
     try:
         pgd.run()
