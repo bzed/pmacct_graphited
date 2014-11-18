@@ -31,8 +31,12 @@ import os
 import re
 import sys
 import signal
+import json
 
 import graphitesend
+
+class PmacctDirectoryHandlerException(Exception):
+    pass
 
 class PmacctDirectoryHandler(RegexMatchingEventHandler):
 
@@ -48,6 +52,7 @@ class PmacctDirectoryHandler(RegexMatchingEventHandler):
         self.graphite_port = graphite_port
         self.graphitesender = None
         self.debug = debug
+        self._file_start_match_re = re.compile(r'^--START \(([0-9]+)\+([0-9]+)\)--$')
         RegexMatchingEventHandler.__init__( self,
                                             regexes=[r'^pmacct_[0-9]+\.json$'],
                                             ignore_directories=True,
@@ -77,13 +82,37 @@ class PmacctDirectoryHandler(RegexMatchingEventHandler):
         return (flow_bytes, flow_packets)
 
 
-    def normalize_and_send_metric(self, metric, flow_bytes, flow_packets, interval_seconds, timestamp=time.time()):
-        # renormalize to fix sampling
-        flow_bytes, flow_packets = self._renormalize(flow_bytes, flow_packets)
-        # re-use renormalize function to calculate byte/packets per second
-        flow_bytes, flow_packets = self._renormalize(flow_bytes, flow_packets, (1/float(interval_seconds)))
+    def normalize_and_send_metric_list(self, metric_list, interval_seconds, timestamp):
+        result_list = []
+        for metric, flow_bytes, flow_packets in metric_list:
+            # renormalize to fix sampling
+            flow_bytes, flow_packets = self._renormalize(flow_bytes, flow_packets)
+            # re-use renormalize function to calculate byte/packets per second
+            flow_bytes, flow_packets = self._renormalize(flow_bytes, flow_packets, (1/float(interval_seconds)))
+            result_list.append(('%s.bytes'   %(metric,), flow_bytes))
+            result_list.append(('%s.packets' %(metric,), flow_packetc))
+        if not self.graphitesender:
+            self._graphite_connect()
+        self.graphitesender.send_list(result_list, timestamp=(timestamp+interval_seconds/2))
 
-        g.send('%s.bytes', flow_bytes, timestamp)
+
+    def parse_pmacct_file(self, filename):
+
+        try:
+            with open(filename) as f:
+                content = f.readlines()
+        except Exception, e:
+            raise PmacctDirectoryHandlerException('Failed to read file %s: %s' %(filename, str(e)))
+
+        pmacct_metrics=[ json.loads(x) for x in content[1:-1] ]
+        if content[-1] != '--END--':
+            raise PmacctDirectoryHandlerException('--END-- tag missing in %s' %(filename,))
+        try:
+            timestamp, interval = self._file_start_match_re.match(content[0]).groups()
+        except Exception, e:
+            raise PmacctDirectoryHandlerException('--START... -- tag missing or not parsable in %s' %(filename,))
+
+        return (pmacct_metrics, timestamp, interval)
 
 
 
@@ -92,7 +121,12 @@ class PmacctDirectoryHandler(RegexMatchingEventHandler):
 class PmacctGraphiteD(object):
 
 
-    def __init__(self, local_as, default_as, graphite_prefix, pmacct_aggregations, renormalization_factor):
+    def __init__(self,
+                 local_as,
+                 default_as,
+                 graphite_prefix,
+                 pmacct_aggregations,
+                 renormalization_factor):
         self.stop_now = False
         self.observer = Observer()
         self.local_as = local_as
