@@ -23,7 +23,7 @@ from application import log
 from application.process import process, ProcessError
 
 from watchdog.observers import Observer
-from watchdog.events import RegexMatchingEventHandler
+from watchdog.events import RegexMatchingEventHandler, FileSystemEvent
 from setproctitle import setproctitle
 
 import time
@@ -43,15 +43,20 @@ class PmacctDirectoryHandler(RegexMatchingEventHandler):
     def __init__(self,
             graphite_prefix,
             name,
+            local_as,
+            default_as,
             renormalization_factor=1,
             graphite_server='localhost',
             graphite_port=2003,
             debug=False):
+        self.local_as = local_as
+        self.default_as = default_as
         self.renormalization_factor = renormalization_factor
         self.graphite_server = graphite_server
         self.graphite_port = graphite_port
         self.graphitesender = None
         self.debug = debug
+        self.error_count = 0
         self._file_start_match_re = re.compile(r'^--START \(([0-9]+)\+([0-9]+)\)--$')
         RegexMatchingEventHandler.__init__( self,
                                             regexes=[r'^pmacct_[0-9]+\.json$'],
@@ -82,29 +87,31 @@ class PmacctDirectoryHandler(RegexMatchingEventHandler):
         return (flow_bytes, flow_packets)
 
 
-    def normalize_and_send_metric_list(self, metric_list, interval_seconds, timestamp):
+    def normalize_and_send_metric_list(self, metric_list, timestamp, interval):
         result_list = []
         for metric, flow_bytes, flow_packets in metric_list:
             # renormalize to fix sampling
             flow_bytes, flow_packets = self._renormalize(flow_bytes, flow_packets)
             # re-use renormalize function to calculate byte/packets per second
-            flow_bytes, flow_packets = self._renormalize(flow_bytes, flow_packets, (1/float(interval_seconds)))
+            flow_bytes, flow_packets = self._renormalize(flow_bytes, flow_packets, (1/float(interval)))
             result_list.append(('%s.bytes'   %(metric,), flow_bytes))
             result_list.append(('%s.packets' %(metric,), flow_packetc))
         if not self.graphitesender:
             self._graphite_connect()
-        self.graphitesender.send_list(result_list, timestamp=(timestamp+interval_seconds/2))
+        try:
+            self.graphitesender.send_list(result_list, timestamp=(timestamp+interval/2))
+        except Exception, e:
+            raise PmacctDirectoryHandlerException('Graphite transport failed: \n%s' %(str(e)))
 
 
     def parse_pmacct_file(self, filename):
-
         try:
             with open(filename) as f:
                 content = f.readlines()
         except Exception, e:
             raise PmacctDirectoryHandlerException('Failed to read file %s: %s' %(filename, str(e)))
 
-        pmacct_metrics=[ json.loads(x) for x in content[1:-1] ]
+        pmacct_data=[ json.loads(x) for x in content[1:-1] ]
         if content[-1] != '--END--':
             raise PmacctDirectoryHandlerException('--END-- tag missing in %s' %(filename,))
         try:
@@ -112,11 +119,48 @@ class PmacctDirectoryHandler(RegexMatchingEventHandler):
         except Exception, e:
             raise PmacctDirectoryHandlerException('--START... -- tag missing or not parsable in %s' %(filename,))
 
-        return (pmacct_metrics, timestamp, interval)
+        return (pmacct_data, timestamp, interval)
 
 
+    def on_created(self, event):
+        super(PmacctDirectoryHandler, self).on_created(event)
+        if event.is_directory:
+            return
+        self.handle_pmacct_file(event.src_path)
 
-#    def __init__(self, local_as, default_as, graphite_prefix, name, directory):
+
+    def handle_pmacct_file(self, filename):
+        try:
+            pmacct_data, timestamp, interval = self.parse_pmacct_file(filename)
+            pmacct_metrics = self.parse_pmacct_data(pmacct_data, timestamp, interval)
+            self._graphite_connect()
+            normalize_and_send_metric_list(pmacct_metrics, timestamp, interval)
+        except PmacctDirectoryHandlerException, e:
+            self.error_count = self.error_count + 1
+            if self.error_count >= 5:
+                raise
+        else:
+            self.error_count = 0
+            os.remove(filename)
+
+
+    def parse_pmacct_data(pmacct_data, timestamp, interval):
+        """ parse pmacct_data into a list of metrics we can send.
+            Needs to be overridden!"""
+        pass
+
+
+class PmacctASDirectoryHandler(PmacctDirectoryHandler):
+
+    def parse_pmacct_data(pmacct_data, timestamp, interval):
+        pass
+
+    
+class PmacctPeerDirectoryHandler(PmacctDirectoryHandler):
+
+    def parse_pmacct_data(pmacct_data, timestamp, interval):
+        pass
+
 
 class PmacctGraphiteD(object):
 
