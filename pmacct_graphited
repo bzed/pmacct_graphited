@@ -119,6 +119,13 @@ class PmacctDirectoryHandler(RegexMatchingEventHandler):
         except Exception, e:
             raise PmacctDirectoryHandlerException('--START... -- tag missing or not parsable in %s' %(filename,))
 
+        # replace AS 0 by our default AS
+        if self.default_as and self.default_as > 0:
+            for entry in pmacct_data:
+                for entry_key in ["as_dst", "as_src", "peer_dst", "peer_src"]:
+                    if entry.has_key(entry_key) and entry[entry_key]==0:
+                        entry[entry_key]=self.default_as
+
         return (pmacct_data, timestamp, interval)
 
 
@@ -152,14 +159,31 @@ class PmacctDirectoryHandler(RegexMatchingEventHandler):
 
 class PmacctASDirectoryHandler(PmacctDirectoryHandler):
 
-    def parse_pmacct_data(pmacct_data, timestamp, interval):
-        pass
+    def parse_pmacct_data(self, pmacct_data, timestamp, interval):
+        return self._parse_pmacct_data(pmacct_data, timestamp, interval, "as_dst", "as_src")
 
+    def _parse_pmacct_data(self, pmacct_data, timestamp, interval, as_dst="as_dst", as_src="as_src"):
+        metric_list = []
+        for entry in pmacct_data:
+            if entry[as_dst] in self.local_as or entry[as_dst] == self.default_as:
+                metric_name = "%s.%s.in" %(str(entry[as_dst]), str(entry[as_src]))
+            elif entry[as_src] in self.local_as or entry[as_src] == self.default_as:
+                 metric_name = "%s.%s.out" %(str(entry[as_dst]), str(entry[as_src]))
+            else:
+                log.fatal("Neither %s nor %s known as local AS, can't handle %s!" %(str(entry[as_dst]),
+                                                                                    str(entry[as_src]),
+                                                                                    str(entry)))
+                continue
+            metric_list.append((metric_name, entry["bytes"], entry["packets"]))
+        return metric_list
+        
+        
     
-class PmacctPeerDirectoryHandler(PmacctDirectoryHandler):
+class PmacctPeerDirectoryHandler(PmacctASDirectoryHandler):
 
-    def parse_pmacct_data(pmacct_data, timestamp, interval):
-        pass
+    def parse_pmacct_data(self, pmacct_data, timestamp, interval):
+        return self._parse_pmacct_data(pmacct_data, timestamp, interval, "peer_dst", "peer_src")
+
 
 
 class PmacctGraphiteD(object):
@@ -170,7 +194,10 @@ class PmacctGraphiteD(object):
                  default_as,
                  graphite_prefix,
                  pmacct_aggregations,
-                 renormalization_factor):
+                 renormalization_factor,
+                 graphite_server,
+                 graphite_port,
+                 debug):
         self.stop_now = False
         self.observer = Observer()
         self.local_as = local_as
@@ -178,9 +205,41 @@ class PmacctGraphiteD(object):
         self.graphite_prefix = graphite_prefix
         self.pmacct_aggregations = pmacct_aggregations
         self.renormalization_factor = renormalization_factor
+        self.graphite_server = graphite_server
+        self.graphite_port = graphite_port
+        self.debug = debug
+
+        self.eventhandler_types = {
+            'as'    : PmacctASDirectoryHandler,
+            'peer'  : PmacctPeerDirectoryHandler
+        }
 
 
     def run(self):
+#        def __init__(self,
+#                graphite_prefix,
+#                name,
+#                local_as,
+#                default_as,
+#                renormalization_factor=1,
+#                graphite_server='localhost',
+#                graphite_port=2003,
+#                debug=False):
+
+
+        for name, data in self.pmacct_aggregations.iteritems():
+            handler = self.eventhandler_types[data['type']](
+                    self.graphite_prefix,
+                    name,
+                    self.local_as,
+                    self.default_as,
+                    self.renormalization_factor,
+                    self.graphite_server,
+                    self.graphite_port,
+                    self.debug)
+            observer.schedule(handler, data['spool_dirctory'], recursive=False)
+
+
         self.observer.start()
         while not self.stop_now:
             time.sleep(1)
@@ -239,10 +298,16 @@ if __name__ == "__main__":
     parser.add_argument('-r', '--renormalization-factor',
                         action='store',
                         dest='renormalization_factor',
-                        help='Applies the renormalization factor to counters,
-                                suitable for use in conjunction with uniform sampling methods.',
+                        help='''Applies the renormalization factor to counters,
+                                suitable for use in conjunction with uniform sampling methods.''',
                         default=1,
                         type=int)
+    parser.add_argument('-s', '--graphite-server',
+                        action='store',
+                        dest='graphite_server',
+                        help='graphite server and port:  server:2013, default: localhost:2003',
+                        default='localhost:2003',
+                        type=str)
     options = parser.parse_args()
 
     setproctitle('%s' %(name,) )
