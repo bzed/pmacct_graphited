@@ -216,17 +216,7 @@ class PmacctGraphiteD(object):
 
 
     def run(self):
-#        def __init__(self,
-#                graphite_prefix,
-#                name,
-#                local_as,
-#                default_as,
-#                renormalization_factor=1,
-#                graphite_server='localhost',
-#                graphite_port=2003,
-#                debug=False):
-
-
+        # setup observers
         for name, data in self.pmacct_aggregations.iteritems():
             handler = self.eventhandler_types[data['type']](
                     self.graphite_prefix,
@@ -237,10 +227,19 @@ class PmacctGraphiteD(object):
                     self.graphite_server,
                     self.graphite_port,
                     self.debug)
+            data['handler'] = handler
             observer.schedule(handler, data['spool_dirctory'], recursive=False)
 
-
         self.observer.start()
+
+
+        # replay alrerady existing files
+        pmacct_file_re = re.compile(r'^pmacct_[0-9]+\.json$')
+        for name, data in self.pmacct_aggregations.iteritems():
+            for filename in os.listdir(data['spool_dirctory']):
+                if pmacct_file_re.findall(filename):
+                    data['handler'].handle_pmacct_file(os.path.join(data['spool_dirctory'], filename))
+
         while not self.stop_now:
             time.sleep(1)
         self.observer.stop()
@@ -302,11 +301,11 @@ if __name__ == "__main__":
                                 suitable for use in conjunction with uniform sampling methods.''',
                         default=1,
                         type=int)
-    parser.add_argument('-s', '--graphite-server',
+    parser.add_argument('-s', '--graphite-connection',
                         action='store',
-                        dest='graphite_server',
-                        help='graphite server and port:  server:2013, default: localhost:2003',
-                        default='localhost:2003',
+                        dest='graphite_connection',
+                        help='graphite server and port:  server:2013, default: 127.0.0.1:2003',
+                        default='127.0.0.1:2003',
                         type=str)
     options = parser.parse_args()
 
@@ -351,11 +350,21 @@ if __name__ == "__main__":
             pmacct_aggregations[graphite_name]['type'] = agg_type
             pmacct_aggregations[graphite_name]['spool_dirctory'] = spool_dirctory
 
+    graphite_connection_re = re.compile(r'^\[?([^\]]*)]?:([0-9]{1,4}|[1-5][0-9]{4}|6[0-4][0-9]{3}|65[0-4][0-9]{2}|655[0-2][0-9]|6553[0-5])')
+    try:
+        graphite_server, graphite_port = graphite_connection_re.match(options.graphite_connection).groups()
+    except Exception, e:
+        log.fatal("Failed to parse graphite-connection option (%s given, needed format: server:port)" %(options.graphite_connection,))
+        sys.exit(3)
+
     pgd = PmacctGraphiteD(options.local_as,
                           options.default_as,
                           options.graphite_prefix.strip('.'),
                           pmacct_aggregations,
-                          options.renormalization_factor)
+                          options.renormalization_factor,
+                          graphite_server,
+                          graphite_port,
+                          options.debug)
 
     try:
         pgd.run()
