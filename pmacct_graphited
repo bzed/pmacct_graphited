@@ -1,4 +1,4 @@
-#!/usr/bin/python
+#!/usr/bin/env python
 # -*- coding: utf-8 -*-
 
 """
@@ -19,7 +19,6 @@ limitations under the License.
 """
 
 from setproctitle import setproctitle
-from application import log
 from application.process import process, ProcessError
 
 from watchdog.observers import Observer
@@ -35,46 +34,54 @@ import json
 
 import graphitesend
 
+import logging
+import logging.handlers
+
 class PmacctDirectoryHandlerException(Exception):
     pass
 
 class PmacctDirectoryHandler(RegexMatchingEventHandler):
 
     def __init__(self,
-            graphite_prefix,
             name,
             local_as,
             default_as,
-            renormalization_factor=1,
-            graphite_server='localhost',
-            graphite_port=2003,
-            debug=False):
+            renormalization_factor,
+            graphite_prefix,
+            graphite_server,
+            graphite_port,
+            debug,
+            logger):
+        self.name = name
         self.local_as = local_as
         self.default_as = default_as
         self.renormalization_factor = renormalization_factor
+        self.graphite_prefix = graphite_prefix
         self.graphite_server = graphite_server
         self.graphite_port = graphite_port
         self.graphitesender = None
         self.debug = debug
         self.error_count = 0
         self._file_start_match_re = re.compile(r'^--START \(([0-9]+)\+([0-9]+)\)--$')
+        self.logger = logger
+        self.next_file = None
         RegexMatchingEventHandler.__init__( self,
-                                            regexes=[r'^pmacct_[0-9]+\.json$'],
+                                            regexes=[r'^.*/pmacct_[0-9]+\.json$'],
                                             ignore_directories=True,
                                             case_sensitive=True
                                             )
 
     def _graphite_connect(self):
         self.graphitesender = graphitesend.init(
-                prefix=graphite_prefix,
-                system_name=name,
+                prefix=self.graphite_prefix,
+                system_name=self.name,
                 graphite_server=self.graphite_server,
                 graphite_port=self.graphite_port,
-                debug=self.debug
-        )
+                debug=self.debug)
 
-
-    def _renormalize(self, flow_bytes, flow_packets, renormalization_factor=self.renormalization_factor):
+    def _renormalize(self, flow_bytes, flow_packets, renormalization_factor=None):
+        if renormalization_factor is None:
+            renormalization_factor=self.renormalization_factor
         if renormalization_factor==1:
             return (flow_bytes, flow_packets)
 # usrf from pmacct:
@@ -95,7 +102,7 @@ class PmacctDirectoryHandler(RegexMatchingEventHandler):
             # re-use renormalize function to calculate byte/packets per second
             flow_bytes, flow_packets = self._renormalize(flow_bytes, flow_packets, (1/float(interval)))
             result_list.append(('%s.bytes'   %(metric,), flow_bytes))
-            result_list.append(('%s.packets' %(metric,), flow_packetc))
+            result_list.append(('%s.packets' %(metric,), flow_packets))
         if not self.graphitesender:
             self._graphite_connect()
         try:
@@ -105,6 +112,8 @@ class PmacctDirectoryHandler(RegexMatchingEventHandler):
 
 
     def parse_pmacct_file(self, filename):
+        self.logger.debug('Parsing %s' %(filename,))
+
         try:
             with open(filename) as f:
                 content = f.readlines()
@@ -112,10 +121,12 @@ class PmacctDirectoryHandler(RegexMatchingEventHandler):
             raise PmacctDirectoryHandlerException('Failed to read file %s: %s' %(filename, str(e)))
 
         pmacct_data=[ json.loads(x) for x in content[1:-1] ]
-        if content[-1] != '--END--':
+        if content[-1].strip() != '--END--':
             raise PmacctDirectoryHandlerException('--END-- tag missing in %s' %(filename,))
         try:
             timestamp, interval = self._file_start_match_re.match(content[0]).groups()
+            timestamp = int(timestamp)
+            interval = int(interval)
         except Exception, e:
             raise PmacctDirectoryHandlerException('--START... -- tag missing or not parsable in %s' %(filename,))
 
@@ -130,6 +141,7 @@ class PmacctDirectoryHandler(RegexMatchingEventHandler):
 
 
     def on_created(self, event):
+        self.logger.debug(event)
         super(PmacctDirectoryHandler, self).on_created(event)
         if event.is_directory:
             return
@@ -137,18 +149,25 @@ class PmacctDirectoryHandler(RegexMatchingEventHandler):
 
 
     def handle_pmacct_file(self, filename):
-        try:
-            pmacct_data, timestamp, interval = self.parse_pmacct_file(filename)
-            pmacct_metrics = self.parse_pmacct_data(pmacct_data, timestamp, interval)
-            self._graphite_connect()
-            normalize_and_send_metric_list(pmacct_metrics, timestamp, interval)
-        except PmacctDirectoryHandlerException, e:
-            self.error_count = self.error_count + 1
-            if self.error_count >= 5:
+        # store new filename and wait for the next one to be created.
+        current_file = self.next_file
+        self.next_file = filename
+
+        if current_file:
+            try:
+                pmacct_data, timestamp, interval = self.parse_pmacct_file(current_file)
+                pmacct_metrics = self.parse_pmacct_data(pmacct_data, timestamp, interval)
+                self._graphite_connect()
+                self.normalize_and_send_metric_list(pmacct_metrics, timestamp, interval)
+            except PmacctDirectoryHandlerException, e:
+                self.loggger.critical(e)
                 raise
-        else:
-            self.error_count = 0
-            os.remove(filename)
+                self.error_count = self.error_count + 1
+                if self.error_count >= 5:
+                    raise
+            else:
+                self.error_count = 0
+                os.remove(current_file)
 
 
     def parse_pmacct_data(pmacct_data, timestamp, interval):
@@ -168,9 +187,9 @@ class PmacctASDirectoryHandler(PmacctDirectoryHandler):
             if entry[as_dst] in self.local_as or entry[as_dst] == self.default_as:
                 metric_name = "%s.%s.in" %(str(entry[as_dst]), str(entry[as_src]))
             elif entry[as_src] in self.local_as or entry[as_src] == self.default_as:
-                 metric_name = "%s.%s.out" %(str(entry[as_dst]), str(entry[as_src]))
+                 metric_name = "%s.%s.out" %(str(entry[as_src]), str(entry[as_dst]))
             else:
-                log.fatal("Neither %s nor %s known as local AS, can't handle %s!" %(str(entry[as_dst]),
+                self.logger.critical("Neither %s nor %s known as local AS, can't handle %s!" %(str(entry[as_dst]),
                                                                                     str(entry[as_src]),
                                                                                     str(entry)))
                 continue
@@ -192,12 +211,13 @@ class PmacctGraphiteD(object):
     def __init__(self,
                  local_as,
                  default_as,
-                 graphite_prefix,
                  pmacct_aggregations,
                  renormalization_factor,
+                 graphite_prefix,
                  graphite_server,
                  graphite_port,
-                 debug):
+                 debug,
+                 logger):
         self.stop_now = False
         self.observer = Observer()
         self.local_as = local_as
@@ -208,6 +228,7 @@ class PmacctGraphiteD(object):
         self.graphite_server = graphite_server
         self.graphite_port = graphite_port
         self.debug = debug
+        self.logger = logger
 
         self.eventhandler_types = {
             'as'    : PmacctASDirectoryHandler,
@@ -219,16 +240,17 @@ class PmacctGraphiteD(object):
         # setup observers
         for name, data in self.pmacct_aggregations.iteritems():
             handler = self.eventhandler_types[data['type']](
-                    self.graphite_prefix,
                     name,
                     self.local_as,
                     self.default_as,
                     self.renormalization_factor,
+                    self.graphite_prefix,
                     self.graphite_server,
                     self.graphite_port,
-                    self.debug)
+                    self.debug,
+                    self.logger)
             data['handler'] = handler
-            observer.schedule(handler, data['spool_dirctory'], recursive=False)
+            self.observer.schedule(handler, data['spool_dirctory'], recursive=False)
 
         self.observer.start()
 
@@ -236,7 +258,9 @@ class PmacctGraphiteD(object):
         # replay alrerady existing files
         pmacct_file_re = re.compile(r'^pmacct_[0-9]+\.json$')
         for name, data in self.pmacct_aggregations.iteritems():
-            for filename in os.listdir(data['spool_dirctory']):
+            old_files = os.listdir(data['spool_dirctory'])
+            old_files.sort()
+            for filename in old_files:
                 if pmacct_file_re.findall(filename):
                     data['handler'].handle_pmacct_file(os.path.join(data['spool_dirctory'], filename))
 
@@ -249,6 +273,7 @@ class PmacctGraphiteD(object):
         self.stop_now = True
 
 if __name__ == "__main__":
+
     from argparse import ArgumentParser
     from os.path import basename
 
@@ -311,20 +336,25 @@ if __name__ == "__main__":
 
     setproctitle('%s' %(name,) )
 
+    loglevel = logging.INFO
     if options.debug:
         DEBUG=True
+        loglevel = logging.DEBUG
 
-    log.msg("Starting %s." % name)
+    loghandler = logging.handlers.SysLogHandler()
+    logging.getLogger('').addHandler(loghandler)
+    logger = logging.getLogger('')
+    logger.setLevel(loglevel)
+      
     if not options.nodaemon:
         pidfile = process.runtime_file('%s.pid' % name)
         try:
             process.daemonize(pidfile)
         except ProcessError, e:
-            log.fatal(str(e))
+            logger.critical(str(e))
             sys.exit(1)
-        else:
-            log.start_syslog(name)
-    log.msg("%s started" % name)
+
+    logger.info("%s started" % name)
 
 
     # parse pmacct_aggregations into a dict
@@ -343,7 +373,7 @@ if __name__ == "__main__":
                 raise Exception('please specify "%s" as aggregation name once only' %(graphite_name,))
 
         except Exception, e:
-            log.fatal("Failed to parse option '-p %s': '%s'" %(pmacct_aggregation, str(e)))
+            logger.critical("Failed to parse option '-p %s': '%s'" %(pmacct_aggregation, str(e)))
             sys.exit(2)
         else:
             pmacct_aggregations[graphite_name] = {}
@@ -353,18 +383,20 @@ if __name__ == "__main__":
     graphite_connection_re = re.compile(r'^\[?([^\]]*)]?:([0-9]{1,4}|[1-5][0-9]{4}|6[0-4][0-9]{3}|65[0-4][0-9]{2}|655[0-2][0-9]|6553[0-5])')
     try:
         graphite_server, graphite_port = graphite_connection_re.match(options.graphite_connection).groups()
+        graphite_port=int(graphite_port)
     except Exception, e:
-        log.fatal("Failed to parse graphite-connection option (%s given, needed format: server:port)" %(options.graphite_connection,))
+        logger.critical("Failed to parse graphite-connection option (%s given, needed format: server:port)" %(options.graphite_connection,))
         sys.exit(3)
 
     pgd = PmacctGraphiteD(options.local_as,
                           options.default_as,
-                          options.graphite_prefix.strip('.'),
                           pmacct_aggregations,
                           options.renormalization_factor,
+                          options.graphite_prefix.strip('.'),
                           graphite_server,
                           graphite_port,
-                          options.debug)
+                          options.debug,
+                          logger)
 
     try:
         pgd.run()
