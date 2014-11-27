@@ -160,7 +160,7 @@ class PmacctDirectoryHandler(RegexMatchingEventHandler):
                 self._graphite_connect()
                 self.normalize_and_send_metric_list(pmacct_metrics, timestamp, interval)
             except PmacctDirectoryHandlerException, e:
-                self.loggger.critical(e)
+                self.logger.critical(e)
                 raise
                 self.error_count = self.error_count + 1
                 if self.error_count >= 5:
