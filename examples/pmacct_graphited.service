@@ -1,0 +1,11 @@
+[Unit]
+Description=pmacct to graphite metric transport daemon
+Requires=nfacctd.service
+
+[Service]
+EnvironmentFile=/etc/default/pmacct_graphited
+ExecStart=/opt/pmacct_graphited/pmacct_graphited -N $PMACCT_GRAPHITED_OPTS
+
+[Install]
+WantedBy=multi-user.target
+

@@ -1,0 +1,1 @@
+PMACCT_GRAPHITED_OPTS="-a 5404 -l 5404 -p as:as:/var/spool/pmacct/as -p peer:peer:/var/spool/pmacct/peer -r100"
