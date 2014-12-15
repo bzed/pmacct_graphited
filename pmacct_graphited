@@ -72,12 +72,15 @@ class PmacctDirectoryHandler(RegexMatchingEventHandler):
                                             )
 
     def _graphite_connect(self):
-        self.graphitesender = graphitesend.init(
-                prefix=self.graphite_prefix,
-                system_name=self.name,
-                graphite_server=self.graphite_server,
-                graphite_port=self.graphite_port,
-                debug=self.debug)
+        try:
+            self.graphitesender = graphitesend.init(
+                    prefix=self.graphite_prefix,
+                    system_name=self.name,
+                    graphite_server=self.graphite_server,
+                    graphite_port=self.graphite_port,
+                    debug=self.debug)
+        except Exception, e:
+            raise PmacctDirectoryHandlerException('Graphite transport failed: \n%s' %(str(e)))
 
     def _renormalize(self, flow_bytes, flow_packets, renormalization_factor=None):
         if renormalization_factor is None:
@@ -153,7 +156,7 @@ class PmacctDirectoryHandler(RegexMatchingEventHandler):
         current_file = self.next_file
         self.next_file = filename
 
-        if current_file:
+        while current_file:
             try:
                 pmacct_data, timestamp, interval = self.parse_pmacct_file(current_file)
                 pmacct_metrics = self.parse_pmacct_data(pmacct_data, timestamp, interval)
@@ -161,13 +164,14 @@ class PmacctDirectoryHandler(RegexMatchingEventHandler):
                 self.normalize_and_send_metric_list(pmacct_metrics, timestamp, interval)
             except PmacctDirectoryHandlerException, e:
                 self.logger.critical(e)
-                raise
                 self.error_count = self.error_count + 1
-                if self.error_count >= 5:
+                time.sleep(10)
+                if self.error_count >= 15:
                     raise
             else:
                 self.error_count = 0
                 os.remove(current_file)
+                current_file = None
 
 
     def parse_pmacct_data(pmacct_data, timestamp, interval):
