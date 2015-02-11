@@ -106,12 +106,21 @@ class PmacctDirectoryHandler(RegexMatchingEventHandler):
             flow_bytes, flow_packets = self._renormalize(flow_bytes, flow_packets, (1/float(interval)))
             result_list.append(('%s.bytes'   %(metric,), flow_bytes))
             result_list.append(('%s.packets' %(metric,), flow_packets))
-        if not self.graphitesender:
-            self._graphite_connect()
-        try:
-            self.graphitesender.send_list(result_list, timestamp=(timestamp+interval/2))
-        except Exception, e:
-            raise PmacctDirectoryHandlerException('Graphite transport failed: \n%s' %(str(e)))
+        send_fail_count = 0
+        while True:
+            try:
+                if not self.graphitesender:
+                    self._graphite_connect()
+                self.graphitesender.send_list(result_list, timestamp=(timestamp+interval/2))
+            except Exception, e:
+                self.graphitesender = None
+                graphitesend.destroy()
+                if send_fail_count > 25:
+                    raise PmacctDirectoryHandlerException('Graphite transport failed: \n%s' %(str(e)))
+                send_fail_count = send_fail_count + 1
+                time.sleep(2)
+            else:
+                break
 
 
     def parse_pmacct_file(self, filename):
