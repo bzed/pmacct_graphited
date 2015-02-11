@@ -115,6 +115,7 @@ class PmacctDirectoryHandler(RegexMatchingEventHandler):
             except Exception, e:
                 self.graphitesender = None
                 graphitesend.destroy()
+                self.logger.critical('Graphite transport failed: \n%s\nTryin again!' %(str(e)))
                 if send_fail_count > 25:
                     raise PmacctDirectoryHandlerException('Graphite transport failed: \n%s' %(str(e)))
                 send_fail_count = send_fail_count + 1
