@@ -176,8 +176,8 @@ class PmacctDirectoryHandler(RegexMatchingEventHandler):
                 self.logger.critical(e)
                 self.error_count = self.error_count + 1
                 time.sleep(10)
-                if self.error_count >= 15:
-                    raise
+                #if self.error_count >= 15:
+                #    raise
             else:
                 self.error_count = 0
                 os.remove(current_file)
